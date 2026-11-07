@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nhà Thông Minh</title>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --text: #1d2430; --muted: #6b7684;
+    --line: #e2e6eb; --accent: #2563eb; --on: #16a34a; --warn: #d97706; --off: #9aa3ad; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f141a; --card: #18202a; --text: #e6ebf1; --muted: #8b96a3;
+      --line: #263140; --accent: #60a5fa; --on: #22c55e; --warn: #f59e0b; --off: #5b6673; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 18px; margin: 0; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--off); }
+  .dot.ok { background: var(--on); } .dot.err { background: var(--bad); } .dot.wait { background: var(--warn); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .grid-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  input { padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 14px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  button { padding: 9px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg);
+    color: var(--text); font-size: 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  h2 { font-size: 15px; margin: 22px 0 10px; color: var(--muted); font-weight: 600; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .card .name { font-weight: 600; margin-bottom: 2px; }
+  .card .type { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+  .big { font-size: 26px; font-weight: 600; }
+  .sub { font-size: 13px; color: var(--muted); }
+  .toggle { width: 52px; height: 30px; border-radius: 15px; border: none; background: var(--off); position: relative; padding: 0; }
+  .toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%;
+    background: #fff; transition: left .15s; }
+  .toggle.on { background: var(--on); } .toggle.on::after { left: 25px; }
+  .ctrl { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+  .badge { display: inline-block; font-size: 12px; padding: 3px 8px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+  .badge.alert { color: var(--bad); border-color: var(--bad); }
+  .empty { color: var(--muted); font-size: 14px; }
+  #log { font-family: ui-monospace, Consolas, monospace; font-size: 12px; max-height: 180px; overflow: auto;
+    white-space: pre-wrap; word-break: break-all; color: var(--muted); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏠 Nhà Thông Minh</h1>
+  <div class="status"><span id="dot" class="dot"></span><span id="statusText">Chưa kết nối</span></div>
+</header>
+<main>
+  <section id="connectPanel" class="panel">
+    <div class="grid-form">
+      <label>Broker host
+        <input id="host" value="p1a15c0e.ala.asia-southeast1.emqxsl.com"></label>
+      <label>Cổng WSS
+        <input id="port" value="8084"></label>
+      <label>Đường dẫn WebSocket
+        <input id="path" value="/mqtt"></label>
+      <label>Tiền tố topic
+        <input id="prefix" value="home"></label>
+      <label>Username
+        <input id="username" value="webapp" autocomplete="username"></label>
+      <label>Password
+        <input id="password" type="password" autocomplete="current-password"></label>
+    </div>
+    <div class="row">
+      <label style="flex-direction:row;align-items:center;gap:6px"><input id="remember" type="checkbox"> Nhớ mật khẩu trên máy này</label>
+      <button id="connectBtn" class="primary">Kết nối</button>
+    </div>
+  </section>
+
+  <div class="row" id="topBar" style="margin-top:0;margin-bottom:8px">
+    <span id="gwStatus" class="sub"></span>
+    <span style="flex:1"></span>
+    <button id="editBtn" class="hidden">Đổi cấu hình</button>
+    <button id="disconnectBtn" class="hidden">Ngắt kết nối</button>
+  </div>
+
+  <div id="rooms"><p class="empty">Kết nối tới broker để xem thiết bị.</p></div>
+
+  <section class="panel" style="margin-top:20px">
+    <div class="sub" style="margin-bottom:6px">Nhật ký MQTT</div>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const FIELDS = ["host", "port", "path", "prefix", "username"];
+  const STORE = "smarthome.cfg";
+  let client = null;
+  let prefix = "home";
+  const devices = {};   // id -> { meta, state }
+  const gateways = {};  // name -> "online" | "offline"
+
+  // ---------- config persistence (browser only, best effort) ----------
+  function loadCfg() {
+    try {
+      const cfg = JSON.parse(localStorage.getItem(STORE) || "{}");
+      FIELDS.forEach((f) => { if (cfg[f]) $(f).value = cfg[f]; });
+      if (cfg.password) { $("password").value = cfg.password; $("remember").checked = true; }
+      return cfg;
+    } catch (e) { return {}; }
+  }
+  function saveCfg() {
+    const cfg = {};
+    FIELDS.forEach((f) => (cfg[f] = $(f).value.trim()));
+    if ($("remember").checked) cfg.password = $("password").value;
+    try { localStorage.setItem(STORE, JSON.stringify(cfg)); } catch (e) {}
+  }
+
+  function log(msg) {
+    const el = $("log");
+    const t = new Date().toLocaleTimeString("vi-VN");
+    el.textContent = `[${t}] ${msg}\n` + el.textContent.slice(0, 8000);
+  }
+  function setStatus(kind, text) {
+    $("dot").className = "dot " + kind;
+    $("statusText").textContent = text;
+  }
+
+  // ---------- MQTT ----------
+  function connect() {
+    const host = $("host").value.trim();
+    if (!host) { alert("Nhập broker host trước đã."); return; }
+    saveCfg();
+    prefix = $("prefix").value.trim().replace(/^\/+|\/+$/g, "") || "home";
+    if (client) client.end(true);
+    for (const k in devices) delete devices[k];
+    for (const k in gateways) delete gateways[k];
+    render();
+
+    const url = `wss://${host}:${$("port").value.trim() || 8084}${$("path").value.trim() || "/mqtt"}`;
+    setStatus("wait", "Đang kết nối…");
+    log("Kết nối " + url);
+    client = mqtt.connect(url, {
+      username: $("username").value.trim() || undefined,
+      password: $("password").value || undefined,
+      clientId: "web-" + Math.random().toString(16).slice(2, 10),
+      reconnectPeriod: 3000,
+      connectTimeout: 10000,
+      clean: true,
+    });
+
+    client.on("connect", () => {
+      setStatus("ok", "Đã kết nối");
+      log("Đã kết nối, subscribe " + prefix + "/#");
+      client.subscribe(prefix + "/#", { qos: 1 });
+      $("connectPanel").classList.add("hidden");
+      $("editBtn").classList.remove("hidden");
+      $("disconnectBtn").classList.remove("hidden");
+    });
+    client.on("reconnect", () => setStatus("wait", "Đang kết nối lại…"));
+    client.on("close", () => setStatus("err", "Mất kết nối"));
+    client.on("error", (err) => { setStatus("err", "Lỗi: " + err.message); log("Lỗi: " + err.message); });
+    client.on("message", onMessage);
+  }
+
+  function onMessage(topic, payload) {
+    const text = payload.toString();
+    if (!topic.startsWith(prefix + "/")) return;
+    const parts = topic.slice(prefix.length + 1).split("/");
+    // prefix/_status/<gateway>
+    if (parts.length === 2 && parts[0] === "_status") {
+      gateways[parts[1]] = text;
+      renderGateways();
+      log(`${topic} = ${text}`);
+      return;
+    }
+    // prefix/<deviceId>/(meta|state)
+    if (parts.length !== 2) return;
+    const [id, kind] = parts;
+    if (kind !== "meta" && kind !== "state") return;
+    if (!text) { delete devices[id]; render(); return; } // empty retained = removed
+    let data;
+    try { data = JSON.parse(text); } catch (e) { log("JSON lỗi trên " + topic); return; }
+    devices[id] = devices[id] || { meta: null, state: {} };
+    devices[id][kind] = data;
+    if (kind === "state") log(`${id} → ${text}`);
+    render();
+  }
+
+  function send(id, cmd) {
+    if (!client || !client.connected) { alert("Chưa kết nối broker."); return; }
+    const topic = `${prefix}/${id}/set`;
+    client.publish(topic, JSON.stringify(cmd), { qos: 1 });
+    log(`Gửi ${topic} ${JSON.stringify(cmd)}`);
+  }
+
+  // ---------- rendering ----------
+  const TYPE_LABEL = { light: "Đèn", plug: "Ổ cắm", ac: "Điều hoà", sensor: "Cảm biến", door: "Cửa" };
+
+  function renderGateways() {
+    const names = Object.keys(gateways);
+    $("gwStatus").textContent = names.length
+      ? "Gateway: " + names.map((n) => `${n} (${gateways[n] === "online" ? "🟢 online" : "🔴 offline"})`).join(", ")
+      : "";
+  }
+
+  function el(tag, attrs, ...kids) {
+    const e = document.createElement(tag);
+    for (const k in attrs || {}) {
+      if (k === "onclick") e.onclick = attrs[k]; else e.setAttribute(k, attrs[k]);
+    }
+    kids.forEach((k) => e.append(k));
+    return e;
+  }
+
+  function cardFor(id, dev) {
+    const m = dev.meta, s = dev.state || {};
+    const card = el("div", { class: "card" },
+      el("div", { class: "name" }, m.name || id),
+      el("div", { class: "type" }, TYPE_LABEL[m.type] || m.type || ""));
+
+    if (m.type === "light" || m.type === "plug") {
+      const t = el("button", { class: "toggle" + (s.on ? " on" : ""), "aria-label": "Bật/tắt",
+        onclick: () => send(id, { on: !s.on }) });
+      card.append(el("div", { class: "ctrl" }, el("span", { class: "big" }, s.on ? "Bật" : "Tắt"), t));
+      if (typeof s.power === "number") card.append(el("div", { class: "sub" }, `Công suất: ${s.power} W`));
+    } else if (m.type === "ac") {
+      const t = el("button", { class: "toggle" + (s.on ? " on" : ""), "aria-label": "Bật/tắt",
+        onclick: () => send(id, { on: !s.on }) });
+      card.append(el("div", { class: "ctrl" }, el("span", { class: "big" }, s.on ? `${s.target ?? "--"}°C` : "Tắt"), t));
+      const target = s.target ?? 25;
+      card.append(el("div", { class: "ctrl" },
+        el("button", { onclick: () => send(id, { target: Math.max(16, target - 1) }) }, "−"),
+        el("span", { class: "sub" }, "Nhiệt độ đặt"),
+        el("button", { onclick: () => send(id, { target: Math.min(30, target + 1) }) }, "+")));
+    } else if (m.type === "sensor") {
+      card.append(el("div", { class: "big" }, s.temp != null ? `${s.temp.toFixed(1)}°C` : "--"));
+      card.append(el("div", { class: "sub" }, s.hum != null ? `Độ ẩm ${Math.round(s.hum)}%` : ""));
+    } else if (m.type === "door") {
+      card.append(el("span", { class: "badge" + (s.open ? " alert" : "") }, s.open ? "🚪 Đang mở" : "🔒 Đã đóng"));
+    } else {
+      card.append(el("div", { class: "sub" }, JSON.stringify(s)));
+    }
+    return card;
+  }
+
+  function render() {
+    const root = $("rooms");
+    root.innerHTML = "";
+    const ids = Object.keys(devices).filter((id) => devices[id].meta);
+    if (!ids.length) {
+      root.append(el("p", { class: "empty" }, client && client.connected
+        ? "Đã kết nối nhưng chưa có thiết bị nào gửi meta lên. Hãy chạy simulator hoặc bật ESP32."
+        : "Kết nối tới broker để xem thiết bị."));
+      return;
+    }
+    const byRoom = {};
+    ids.forEach((id) => {
+      const room = devices[id].meta.room || "Khác";
+      (byRoom[room] = byRoom[room] || []).push(id);
+    });
+    Object.keys(byRoom).sort().forEach((room) => {
+      root.append(el("h2", {}, room));
+      const grid = el("div", { class: "cards" });
+      byRoom[room].sort().forEach((id) => grid.append(cardFor(id, devices[id])));
+      root.append(grid);
+    });
+  }
+
+  // ---------- wiring ----------
+  $("connectBtn").onclick = connect;
+  $("editBtn").onclick = () => $("connectPanel").classList.toggle("hidden");
+  $("disconnectBtn").onclick = () => {
+    if (client) client.end(true);
+    client = null;
+    setStatus("", "Chưa kết nối");
+    $("connectPanel").classList.remove("hidden");
+    render();
+  };
+
+  const cfg = loadCfg();
+  if (cfg.host && cfg.password) connect();
+})();
+</script>
+</body>
+</html>
