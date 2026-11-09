@@ -191,9 +191,22 @@
       $("disconnectBtn").classList.remove("hidden");
       setTimeout(loadHistory, 1500); // đợi retained meta về để biết thiết bị nào là cảm biến
     });
+    let authFailed = false;
     client.on("reconnect", () => setStatus("wait", "Đang kết nối lại…"));
-    client.on("close", () => setStatus("err", "Mất kết nối"));
-    client.on("error", (err) => { setStatus("err", "Lỗi: " + err.message); log("Lỗi: " + err.message); });
+    client.on("close", () => { if (!authFailed) setStatus("err", "Mất kết nối"); });
+    client.on("error", (err) => {
+      log("Lỗi: " + err.message);
+      // CONNACK 4/5 (MQTT 3.1.1) hoặc 134/135 (MQTT 5): sai tài khoản / không có quyền -> thử lại vô ích
+      if ([4, 5, 134, 135].includes(err.code) || /username or password|not authorized/i.test(err.message)) {
+        authFailed = true;
+        client.end(true);
+        setStatus("err", "Sai username hoặc mật khẩu");
+        $("connectPanel").classList.remove("hidden");
+        $("password").focus();
+        return;
+      }
+      setStatus("err", "Lỗi: " + err.message);
+    });
     client.on("message", onMessage);
   }
 
