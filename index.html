@@ -50,6 +50,13 @@
   #log { font-family: ui-monospace, Consolas, monospace; font-size: 12px; max-height: 180px; overflow: auto;
     white-space: pre-wrap; word-break: break-all; color: var(--muted); }
   .hidden { display: none; }
+  select { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 14px; }
+  .chart { width: 100%; height: 160px; display: block; }
+  .chart .grid { stroke: var(--line); stroke-width: 1; }
+  .chart text { fill: var(--muted); font-size: 11px; }
+  .legend { display: flex; gap: 14px; font-size: 13px; color: var(--muted); margin: 4px 0 10px; }
+  .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  .evt { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -72,6 +79,10 @@
         <input id="username" value="webapp" autocomplete="username"></label>
       <label>Password
         <input id="password" type="password" autocomplete="current-password"></label>
+      <label>Supabase URL (lịch sử, tuỳ chọn)
+        <input id="sbUrl" value="https://trszrifpoenwcrkcfmfm.supabase.co"></label>
+      <label>Supabase publishable / anon key
+        <input id="sbKey" type="password" placeholder="sb_publishable_… hoặc eyJ…"></label>
     </div>
     <div class="row">
       <label style="flex-direction:row;align-items:center;gap:6px"><input id="remember" type="checkbox"> Nhớ mật khẩu trên máy này</label>
@@ -88,6 +99,24 @@
 
   <div id="rooms"><p class="empty">Kết nối tới broker để xem thiết bị.</p></div>
 
+  <section id="historyPanel" class="panel hidden" style="margin-top:20px">
+    <div class="row" style="margin-top:0;justify-content:space-between">
+      <strong>Lịch sử</strong>
+      <span>
+        <select id="histRange">
+          <option value="6">6 giờ</option>
+          <option value="24" selected>24 giờ</option>
+          <option value="168">7 ngày</option>
+        </select>
+        <button id="histReload">Tải lại</button>
+      </span>
+    </div>
+    <div class="sub" id="histStatus" style="margin:8px 0"></div>
+    <div id="histCharts"></div>
+    <h2 style="margin-top:14px">Sự kiện gần đây</h2>
+    <div id="histEvents" class="sub"></div>
+  </section>
+
   <section class="panel" style="margin-top:20px">
     <div class="sub" style="margin-bottom:6px">Nhật ký MQTT</div>
     <div id="log"></div>
@@ -97,7 +126,7 @@
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  const FIELDS = ["host", "port", "path", "prefix", "username"];
+  const FIELDS = ["host", "port", "path", "prefix", "username", "sbUrl", "sbKey"];
   const STORE = "smarthome.cfg";
   let client = null;
   let prefix = "home";
@@ -160,6 +189,7 @@
       $("connectPanel").classList.add("hidden");
       $("editBtn").classList.remove("hidden");
       $("disconnectBtn").classList.remove("hidden");
+      setTimeout(loadHistory, 1500); // đợi retained meta về để biết thiết bị nào là cảm biến
     });
     client.on("reconnect", () => setStatus("wait", "Đang kết nối lại…"));
     client.on("close", () => setStatus("err", "Mất kết nối"));
@@ -270,6 +300,90 @@
       root.append(grid);
     });
   }
+
+  // ---------- history (Supabase REST) ----------
+  async function sb(path, opts) {
+    const base = $("sbUrl").value.trim().replace(/\/+$/, "");
+    const res = await fetch(base + path, {
+      ...opts,
+      headers: { apikey: $("sbKey").value.trim(), "Content-Type": "application/json" },
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json();
+  }
+
+  function nameOf(id) { return (devices[id] && devices[id].meta && devices[id].meta.name) || id; }
+
+  function lineChart(points, key, color, unit) {
+    const vals = points.map((p) => p[key]).filter((v) => v != null).map(Number);
+    if (vals.length < 2) return el("div", { class: "sub" }, "Chưa đủ dữ liệu để vẽ.");
+    const W = 600, H = 160, L = 34, R = 8, T = 8, B = 20;
+    let min = Math.min(...vals), max = Math.max(...vals);
+    if (max - min < 1) { min -= 0.5; max += 0.5; }
+    const t0 = new Date(points[0].bucket).getTime(), t1 = new Date(points[points.length - 1].bucket).getTime();
+    const x = (t) => L + ((t - t0) / Math.max(1, t1 - t0)) * (W - L - R);
+    const y = (v) => T + (1 - (v - min) / (max - min)) * (H - T - B);
+    const d = points.filter((p) => p[key] != null)
+      .map((p, i) => `${i ? "L" : "M"}${x(new Date(p.bucket).getTime()).toFixed(1)},${y(Number(p[key])).toFixed(1)}`).join("");
+    const fmt = (t) => new Date(t).toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" });
+    const svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${key}">
+      <line class="grid" x1="${L}" x2="${W - R}" y1="${y(max)}" y2="${y(max)}"/>
+      <line class="grid" x1="${L}" x2="${W - R}" y1="${y(min)}" y2="${y(min)}"/>
+      <text x="2" y="${y(max) + 4}">${max.toFixed(1)}</text>
+      <text x="2" y="${y(min) + 4}">${min.toFixed(1)}</text>
+      <text x="${L}" y="${H - 4}">${fmt(t0)}</text>
+      <text x="${W - R}" y="${H - 4}" text-anchor="end">${fmt(t1)}</text>
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>
+    </svg>`;
+    const wrap = el("div");
+    wrap.innerHTML = svg;
+    return wrap;
+  }
+
+  function describe(id, p) {
+    if ("open" in p) return p.open ? "🚪 mở" : "🔒 đóng";
+    if ("on" in p) return (p.on ? "bật" : "tắt") + (p.target != null ? ` (${p.target}°C)` : "");
+    return JSON.stringify(p);
+  }
+
+  async function loadHistory() {
+    if (!$("sbUrl").value.trim() || !$("sbKey").value.trim()) { $("historyPanel").classList.add("hidden"); return; }
+    $("historyPanel").classList.remove("hidden");
+    const hours = Number($("histRange").value);
+    $("histStatus").textContent = "Đang tải…";
+    const charts = $("histCharts"), list = $("histEvents");
+    try {
+      const sensors = Object.keys(devices).filter((id) => devices[id].meta && devices[id].meta.type === "sensor");
+      if (!sensors.length) sensors.push("living_temp");
+      charts.innerHTML = "";
+      for (const id of sensors) {
+        const pts = await sb("/rest/v1/rpc/sensor_history", { method: "POST", body: JSON.stringify({ p_device: id, p_hours: hours }) });
+        charts.append(el("div", { class: "sub", style: "margin-top:6px;font-weight:600" }, nameOf(id)));
+        charts.append(el("div", { class: "legend" }, el("span", {}, el("i", { style: "background:var(--warn)" }), "Nhiệt độ (°C)")));
+        charts.append(lineChart(pts, "temp", "var(--warn)"));
+        charts.append(el("div", { class: "legend" }, el("span", {}, el("i", { style: "background:var(--accent)" }), "Độ ẩm (%)")));
+        charts.append(lineChart(pts, "hum", "var(--accent)"));
+      }
+      // Sự kiện: bỏ dữ liệu cảm biến, chỉ giữ lần trạng thái thực sự đổi
+      const since = new Date(Date.now() - hours * 3600e3).toISOString();
+      const rows = await sb(`/rest/v1/events?select=created_at,device,payload&payload->>temp=is.null&created_at=gte.${since}&order=created_at.asc&limit=1000`);
+      const last = {}, changes = [];
+      rows.forEach((r) => {
+        const key = JSON.stringify({ on: r.payload.on, open: r.payload.open, target: r.payload.target });
+        if (last[r.device] !== key) { if (last[r.device] !== undefined) changes.push(r); last[r.device] = key; }
+      });
+      list.innerHTML = "";
+      changes.reverse().slice(0, 30).forEach((r) => list.append(el("div", { class: "evt" },
+        el("span", {}, `${nameOf(r.device)}: ${describe(r.device, r.payload)}`),
+        el("span", {}, new Date(r.created_at).toLocaleString("vi-VN")))));
+      if (!changes.length) list.textContent = "Chưa có thay đổi trạng thái nào trong khoảng này.";
+      $("histStatus").textContent = `Cập nhật lúc ${new Date().toLocaleTimeString("vi-VN")}`;
+    } catch (e) {
+      $("histStatus").textContent = "Lỗi tải lịch sử: " + e.message;
+    }
+  }
+  $("histReload").onclick = loadHistory;
+  $("histRange").onchange = loadHistory;
 
   // ---------- wiring ----------
   $("connectBtn").onclick = connect;
